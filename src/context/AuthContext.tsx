@@ -1,5 +1,7 @@
 
 import React, { createContext, useContext, useState, useEffect } from "react";
+import { User as FirebaseUser, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged } from "firebase/auth";
+import { auth } from "@/lib/firebase";
 import { User } from "@/types";
 import { toast } from "sonner";
 
@@ -26,30 +28,30 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
-    const storedUser = localStorage.getItem("flutter_task_user");
-    if (storedUser) {
-      setUser(JSON.parse(storedUser));
-    }
-    setIsLoading(false);
+    const unsubscribe = onAuthStateChanged(auth, (firebaseUser) => {
+      if (firebaseUser) {
+        // Map Firebase user to our User type
+        const appUser: User = {
+          id: firebaseUser.uid,
+          email: firebaseUser.email || "",
+        };
+        setUser(appUser);
+      } else {
+        setUser(null);
+      }
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, []);
 
-  // For demo purposes, we're simulating authentication
   const login = async (email: string, password: string) => {
     setIsLoading(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Simple validation (in a real app, this would be handled by Firebase Auth)
-      if (email && password.length >= 6) {
-        const newUser = { id: `user-${Date.now()}`, email };
-        localStorage.setItem("flutter_task_user", JSON.stringify(newUser));
-        setUser(newUser);
-        toast.success("Logged in successfully!");
-      } else {
-        throw new Error("Invalid credentials");
-      }
+      await signInWithEmailAndPassword(auth, email, password);
+      toast.success("Logged in successfully!");
     } catch (error) {
+      console.error("Login error:", error);
       toast.error("Login failed. Please check your credentials.");
       throw error;
     } finally {
@@ -60,19 +62,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const register = async (email: string, password: string) => {
     setIsLoading(true);
     try {
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
-      
-      // Simple validation
-      if (email && password.length >= 6) {
-        const newUser = { id: `user-${Date.now()}`, email };
-        localStorage.setItem("flutter_task_user", JSON.stringify(newUser));
-        setUser(newUser);
-        toast.success("Account created successfully!");
-      } else {
-        throw new Error("Invalid credentials");
-      }
+      await createUserWithEmailAndPassword(auth, email, password);
+      toast.success("Account created successfully!");
     } catch (error) {
+      console.error("Registration error:", error);
       toast.error("Registration failed. Please try again.");
       throw error;
     } finally {
@@ -80,11 +73,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem("flutter_task_user");
-    localStorage.removeItem("flutter_tasks");
-    setUser(null);
-    toast.info("Logged out successfully");
+  const logout = async () => {
+    try {
+      await signOut(auth);
+      toast.info("Logged out successfully");
+    } catch (error) {
+      console.error("Logout error:", error);
+      toast.error("Logout failed");
+    }
   };
 
   return (

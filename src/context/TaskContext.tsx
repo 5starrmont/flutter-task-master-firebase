@@ -3,6 +3,20 @@ import React, { createContext, useContext, useState, useEffect } from "react";
 import { Task, SubTask } from "@/types";
 import { useAuth } from "./AuthContext";
 import { toast } from "sonner";
+import { db } from "@/lib/firebase";
+import { 
+  collection, 
+  query, 
+  where, 
+  onSnapshot, 
+  addDoc, 
+  deleteDoc, 
+  updateDoc, 
+  doc, 
+  serverTimestamp, 
+  Timestamp, 
+  DocumentData 
+} from "firebase/firestore";
 
 interface TaskContextType {
   tasks: Task[];
@@ -31,135 +45,174 @@ export const TaskProvider: React.FC<{ children: React.ReactNode }> = ({ children
   const [tasks, setTasks] = useState<Task[]>([]);
   const [isLoading, setIsLoading] = useState(true);
 
-  // Load tasks from localStorage
   useEffect(() => {
-    if (user) {
-      const storedTasks = localStorage.getItem("flutter_tasks");
-      if (storedTasks) {
-        const parsedTasks = JSON.parse(storedTasks);
-        // Filter tasks for current user
-        const userTasks = parsedTasks.filter((task: Task) => task.userId === user.id);
-        // Convert string dates back to Date objects
-        const tasksWithDates = userTasks.map((task: Task) => ({
-          ...task,
-          createdAt: new Date(task.createdAt)
-        }));
-        setTasks(tasksWithDates);
-      }
-    } else {
+    if (!user) {
       setTasks([]);
+      setIsLoading(false);
+      return;
     }
-    setIsLoading(false);
+
+    const tasksCollection = collection(db, "tasks");
+    const tasksQuery = query(tasksCollection, where("userId", "==", user.id));
+
+    // Set up real-time listener for tasks
+    const unsubscribe = onSnapshot(tasksQuery, (snapshot) => {
+      const tasksData: Task[] = snapshot.docs.map((doc) => {
+        const data = doc.data();
+        
+        // Convert Firestore timestamp to Date
+        const createdAt = data.createdAt instanceof Timestamp 
+          ? data.createdAt.toDate() 
+          : new Date();
+        
+        return {
+          id: doc.id,
+          title: data.title,
+          description: data.description,
+          isCompleted: data.isCompleted,
+          userId: data.userId,
+          createdAt: createdAt,
+          subTasks: data.subTasks || [],
+        };
+      });
+      
+      setTasks(tasksData);
+      setIsLoading(false);
+    }, (error) => {
+      console.error("Error fetching tasks:", error);
+      toast.error("Failed to load tasks");
+      setIsLoading(false);
+    });
+
+    return () => unsubscribe();
   }, [user]);
 
-  // Save tasks to localStorage whenever they change
-  useEffect(() => {
-    if (user) {
-      // Get all tasks from localStorage
-      const storedTasks = localStorage.getItem("flutter_tasks");
-      let allTasks = storedTasks ? JSON.parse(storedTasks) : [];
-      
-      // Filter out current user's tasks
-      allTasks = allTasks.filter((task: Task) => task.userId !== user.id);
-      
-      // Add current user's tasks
-      localStorage.setItem("flutter_tasks", JSON.stringify([...allTasks, ...tasks]));
-    }
-  }, [tasks, user]);
-
-  const addTask = (title: string, description?: string) => {
+  const addTask = async (title: string, description?: string) => {
     if (!user) return;
     
-    const newTask: Task = {
-      id: `task-${Date.now()}`,
-      title,
-      description,
-      isCompleted: false,
-      userId: user.id,
-      createdAt: new Date(),
-      subTasks: []
-    };
-    
-    setTasks(prevTasks => [...prevTasks, newTask]);
-    toast.success("Task added successfully!");
+    try {
+      const tasksCollection = collection(db, "tasks");
+      await addDoc(tasksCollection, {
+        title,
+        description,
+        isCompleted: false,
+        userId: user.id,
+        createdAt: serverTimestamp(),
+        subTasks: []
+      });
+      
+      toast.success("Task added successfully!");
+    } catch (error) {
+      console.error("Error adding task:", error);
+      toast.error("Failed to add task");
+    }
   };
 
-  const deleteTask = (id: string) => {
-    setTasks(prevTasks => prevTasks.filter(task => task.id !== id));
-    toast.info("Task deleted");
+  const deleteTask = async (id: string) => {
+    try {
+      await deleteDoc(doc(db, "tasks", id));
+      toast.info("Task deleted");
+    } catch (error) {
+      console.error("Error deleting task:", error);
+      toast.error("Failed to delete task");
+    }
   };
 
-  const toggleTaskCompletion = (id: string) => {
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
-        task.id === id 
-          ? { ...task, isCompleted: !task.isCompleted } 
-          : task
-      )
-    );
+  const toggleTaskCompletion = async (id: string) => {
+    try {
+      const taskDoc = doc(db, "tasks", id);
+      const taskToUpdate = tasks.find(task => task.id === id);
+      if (taskToUpdate) {
+        await updateDoc(taskDoc, {
+          isCompleted: !taskToUpdate.isCompleted
+        });
+      }
+    } catch (error) {
+      console.error("Error toggling task completion:", error);
+      toast.error("Failed to update task");
+    }
   };
 
-  const updateTask = (id: string, title: string, description?: string) => {
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
-        task.id === id 
-          ? { ...task, title, description } 
-          : task
-      )
-    );
-    toast.success("Task updated successfully!");
+  const updateTask = async (id: string, title: string, description?: string) => {
+    try {
+      const taskDoc = doc(db, "tasks", id);
+      await updateDoc(taskDoc, { title, description });
+      toast.success("Task updated successfully!");
+    } catch (error) {
+      console.error("Error updating task:", error);
+      toast.error("Failed to update task");
+    }
   };
 
-  const addSubTask = (taskId: string, time: string, details: string) => {
-    const newSubTask: SubTask = {
-      id: `subtask-${Date.now()}`,
-      time,
-      details,
-      isCompleted: false
-    };
-    
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
-        task.id === taskId 
-          ? { 
-              ...task, 
-              subTasks: [...(task.subTasks || []), newSubTask] 
-            } 
-          : task
-      )
-    );
-    toast.success("Sub-task added successfully!");
+  const addSubTask = async (taskId: string, time: string, details: string) => {
+    try {
+      const taskDoc = doc(db, "tasks", taskId);
+      const taskToUpdate = tasks.find(task => task.id === taskId);
+      
+      if (taskToUpdate) {
+        const newSubTask: SubTask = {
+          id: `subtask-${Date.now()}`,
+          time,
+          details,
+          isCompleted: false
+        };
+        
+        const updatedSubTasks = [...(taskToUpdate.subTasks || []), newSubTask];
+        
+        await updateDoc(taskDoc, {
+          subTasks: updatedSubTasks
+        });
+        
+        toast.success("Sub-task added successfully!");
+      }
+    } catch (error) {
+      console.error("Error adding sub-task:", error);
+      toast.error("Failed to add sub-task");
+    }
   };
 
-  const deleteSubTask = (taskId: string, subTaskId: string) => {
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
-        task.id === taskId 
-          ? { 
-              ...task, 
-              subTasks: task.subTasks?.filter(st => st.id !== subTaskId) || [] 
-            } 
-          : task
-      )
-    );
-    toast.info("Sub-task deleted");
+  const deleteSubTask = async (taskId: string, subTaskId: string) => {
+    try {
+      const taskDoc = doc(db, "tasks", taskId);
+      const taskToUpdate = tasks.find(task => task.id === taskId);
+      
+      if (taskToUpdate && taskToUpdate.subTasks) {
+        const updatedSubTasks = taskToUpdate.subTasks.filter(
+          subTask => subTask.id !== subTaskId
+        );
+        
+        await updateDoc(taskDoc, {
+          subTasks: updatedSubTasks
+        });
+        
+        toast.info("Sub-task deleted");
+      }
+    } catch (error) {
+      console.error("Error deleting sub-task:", error);
+      toast.error("Failed to delete sub-task");
+    }
   };
 
-  const toggleSubTaskCompletion = (taskId: string, subTaskId: string) => {
-    setTasks(prevTasks => 
-      prevTasks.map(task => 
-        task.id === taskId 
-          ? { 
-              ...task, 
-              subTasks: task.subTasks?.map(st => 
-                st.id === subTaskId 
-                  ? { ...st, isCompleted: !st.isCompleted }
-                  : st
-              ) || [] 
-            } 
-          : task
-      )
-    );
+  const toggleSubTaskCompletion = async (taskId: string, subTaskId: string) => {
+    try {
+      const taskDoc = doc(db, "tasks", taskId);
+      const taskToUpdate = tasks.find(task => task.id === taskId);
+      
+      if (taskToUpdate && taskToUpdate.subTasks) {
+        const updatedSubTasks = taskToUpdate.subTasks.map(subTask => 
+          subTask.id === subTaskId 
+            ? { ...subTask, isCompleted: !subTask.isCompleted }
+            : subTask
+        );
+        
+        await updateDoc(taskDoc, {
+          subTasks: updatedSubTasks
+        });
+      }
+    } catch (error) {
+      console.error("Error toggling sub-task completion:", error);
+      toast.error("Failed to update sub-task");
+    }
   };
 
   return (
